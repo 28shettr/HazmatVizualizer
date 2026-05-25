@@ -41,7 +41,7 @@ export const DEFAULT_SETTINGS: Settings = {
   maxVelocity: 40,
   maxAcceleration: 30,
   maxDeceleration: 30,
-  fieldMap: "decode.webp",
+  fieldMap: "intothedeep.webp",
   // Resolved at runtime against import.meta.env.BASE_URL by consumers.
   robotImage: `${import.meta.env.BASE_URL}robot.png`,
   theme: "auto",
