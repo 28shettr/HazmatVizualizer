@@ -49,6 +49,11 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  const url = new URL(event.request.url);
+  // The Cache API only supports http(s); skip browser-extension and other schemes.
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return;
+  }
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
