@@ -197,6 +197,7 @@ export async function* optimizePathLive(
       : [seedControlPoint(start, end)];
 
   let currentCost = computeCost(start, end, current, obstacles, opts);
+  console.log("[optimizer] seed", { current, currentCost });
   yield { controlPoints: current, cost: currentCost, iteration: 0, done: false };
 
   const baseDist = distance(start, end);

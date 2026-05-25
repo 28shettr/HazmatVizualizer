@@ -2659,13 +2659,18 @@
     lineId: string,
     _targetControlPointIndex?: number,
   ) {
+    console.log("[optimizer] click", { lineId });
     const lineIndex = lines.findIndex((l) => l.id === lineId);
     if (lineIndex === -1) {
+      console.warn("[optimizer] line not found", lineId, lines.map((l) => l.id));
       alert("Could not find line to optimize.");
       return;
     }
 
-    if (optimizingLineIds[lineId]) return;
+    if (optimizingLineIds[lineId]) {
+      console.warn("[optimizer] already running, ignoring click", lineId);
+      return;
+    }
     optimizingLineIds = { ...optimizingLineIds, [lineId]: true };
 
     try {
@@ -2673,6 +2678,11 @@
       const startPt =
         lineIndex === 0 ? startPoint : lines[lineIndex - 1]?.endPoint;
       if (!startPt) throw new Error("Missing start point for optimization.");
+      console.log("[optimizer] starting", {
+        startPt,
+        endPt: line.endPoint,
+        existingControlPoints: line.controlPoints.length,
+      });
 
       const startAnchor = { x: startPt.x, y: startPt.y };
       const endAnchor = { x: line.endPoint.x, y: line.endPoint.y };
@@ -2716,8 +2726,9 @@
       // Commit a single history entry for the whole optimization.
       lines = normalizeLines(lines);
       recordChange();
+      console.log("[optimizer] done");
     } catch (err) {
-      console.error(err);
+      console.error("[optimizer] threw", err);
       alert((err as Error).message || "Optimization failed.");
     } finally {
       optimizingLineIds = { ...optimizingLineIds, [lineId]: false };
