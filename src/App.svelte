@@ -69,7 +69,7 @@
   import { onMount, tick } from "svelte";
   import { debounce } from "lodash";
   import { createHistory, type AppState } from "./utils/history";
-  import { optimizePath } from "./utils/pathOptimizer";
+  import { optimizePathLive } from "./utils/pathOptimizer";
   // Browser-only build: file operations use the browser file store and
   // localStorage. Electron-specific APIs have been removed.
 
@@ -2674,9 +2674,20 @@
         lineIndex === 0 ? startPoint : lines[lineIndex - 1]?.endPoint;
       if (!startPt) throw new Error("Missing start point for optimization.");
 
-      const result = optimizePath(
-        { x: startPt.x, y: startPt.y },
-        { x: line.endPoint.x, y: line.endPoint.y },
+      const startAnchor = { x: startPt.x, y: startPt.y };
+      const endAnchor = { x: line.endPoint.x, y: line.endPoint.y };
+      const seedControlPoints = line.controlPoints.length
+        ? line.controlPoints.map((cp) => ({ x: cp.x, y: cp.y }))
+        : [];
+
+      // Stream every improvement back into the lines array so the canvas
+      // redraws live while the optimizer thinks. We rebuild `lines` (and
+      // assign it) rather than mutating in place so Svelte's reactivity
+      // picks up the change.
+      for await (const progress of optimizePathLive(
+        startAnchor,
+        endAnchor,
+        seedControlPoints,
         shapes,
         {
           fieldMin: FIELD_MIN,
@@ -2684,22 +2695,26 @@
           robotWidth: settings.rWidth,
           robotHeight: settings.rHeight,
           safetyMargin: settings.safetyMargin ?? 0,
+          maxVelocity: settings.maxVelocity ?? 40,
+          maxAcceleration: settings.maxAcceleration ?? 30,
         },
-      );
-
-      if (!result.clear) {
-        alert(
-          "No collision-free path found between these points — start, end, or both may be too close to an obstacle. Leaving the path unchanged.",
-        );
-        return;
+      )) {
+        const targetIndex = lines.findIndex((l) => l.id === lineId);
+        if (targetIndex === -1) break; // line was deleted mid-optimization
+        const target = lines[targetIndex];
+        const newLines = [...lines];
+        newLines[targetIndex] = {
+          ...target,
+          controlPoints: progress.controlPoints.map((p) => ({
+            x: p.x,
+            y: p.y,
+          })),
+        };
+        lines = newLines;
       }
 
-      const newLines = [...lines];
-      newLines[lineIndex] = {
-        ...line,
-        controlPoints: result.controlPoints,
-      };
-      lines = normalizeLines(newLines);
+      // Commit a single history entry for the whole optimization.
+      lines = normalizeLines(lines);
       recordChange();
     } catch (err) {
       console.error(err);

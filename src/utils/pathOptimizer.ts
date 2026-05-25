@@ -1,22 +1,21 @@
 /**
  * Local Bezier path optimizer.
  *
- * Given a start and end point plus a set of obstacle polygons, finds the
- * Bezier control points that produce the shortest path which stays outside
- * every obstacle by at least the robot's safety margin.
+ * Iteratively places control points to minimize a cost that approximates the
+ * robot's actual traversal time. The cost combines:
  *
- * Strategy (fast → robust):
- *   1. Try a straight line (zero control points). If clear, that's optimal.
- *   2. Sweep a single control point along the perpendicular bisector and a
- *      few "along-line" anchor positions; pick the clear option with the
- *      shortest sampled arc length.
- *   3. If no single control point works, search a 2-control-point grid where
- *      each point is perpendicular-offset from its anchor (1/3 and 2/3 along
- *      the start→end line).
+ *   - estimated travel time (path length divided by a speed cap that drops
+ *     when the curvature is high, modeling centripetal acceleration limits),
+ *   - a small length tiebreaker so two equal-time paths prefer the shorter,
+ *   - heavy penalties for crossing/skimming obstacles and leaving the field,
+ *   - a soft penalty on sharp local turns to discourage self-intersecting
+ *     control-point placements.
  *
- * Length is measured by sampling the curve; collision uses `pointInPolygon`
- * plus `minDistanceToPolygon` from the existing geometry helpers, with the
- * robot's half-diagonal inflating the obstacle.
+ * Optimization is hill-climbing with a cooling step size: each iteration
+ * proposes several perturbations around the current control points, keeps
+ * the best one if it lowers cost, and shrinks the search radius over time.
+ * `optimizePathLive` is an async generator that yields after each improving
+ * iteration so the caller can stream results into the UI without blocking.
  */
 
 import type { BasePoint, Shape } from "../types";
@@ -31,46 +30,21 @@ export interface OptimizerOptions {
   robotWidth: number;
   robotHeight: number;
   safetyMargin: number;
+  maxVelocity: number;
+  maxAcceleration: number;
 }
 
-export interface OptimizerResult {
+export interface OptimizerProgress {
   controlPoints: BasePoint[];
-  pathLength: number;
-  clear: boolean;
+  cost: number;
+  iteration: number;
+  done: boolean;
 }
 
 function distance(a: BasePoint, b: BasePoint): number {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
   return Math.sqrt(dx * dx + dy * dy);
-}
-
-function sampledArcLength(points: BasePoint[]): number {
-  let length = 0;
-  let prev = getCurvePoint(0, points);
-  for (let i = 1; i <= SAMPLE_COUNT; i++) {
-    const p = getCurvePoint(i / SAMPLE_COUNT, points);
-    length += distance(prev, p);
-    prev = p;
-  }
-  return length;
-}
-
-function isPathClear(
-  points: BasePoint[],
-  obstacles: BasePoint[][],
-  margin: number,
-): boolean {
-  if (obstacles.length === 0) return true;
-  for (let i = 0; i <= SAMPLE_COUNT; i++) {
-    const p = getCurvePoint(i / SAMPLE_COUNT, points);
-    const coords = [p.x, p.y];
-    for (const obs of obstacles) {
-      if (pointInPolygon(coords, obs)) return false;
-      if (minDistanceToPolygon(coords, obs) < margin) return false;
-    }
-  }
-  return true;
 }
 
 function clampToField(p: BasePoint, min: number, max: number): BasePoint {
@@ -80,162 +54,207 @@ function clampToField(p: BasePoint, min: number, max: number): BasePoint {
   };
 }
 
-function perpendicularUnit(from: BasePoint, to: BasePoint): BasePoint {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const len = Math.sqrt(dx * dx + dy * dy) || 1;
-  return { x: -dy / len, y: dx / len };
-}
-
-function searchSingleControlPoint(
-  start: BasePoint,
-  end: BasePoint,
-  obstacles: BasePoint[][],
-  margin: number,
-  fieldMin: number,
-  fieldMax: number,
-): { cp: BasePoint; length: number } | null {
-  const perp = perpendicularUnit(start, end);
-  const direct = distance(start, end);
-  // Search anchors along the start→end line plus perpendicular offsets on
-  // each side. Coarse step keeps this well under a second for typical fields.
-  const anchorRatios = [0.3, 0.4, 0.5, 0.6, 0.7];
-  const maxOffset = Math.max(40, direct);
-  const offsetStep = 2;
-
-  let best: { cp: BasePoint; length: number } | null = null;
-
-  for (const t of anchorRatios) {
-    const anchor: BasePoint = {
-      x: start.x + (end.x - start.x) * t,
-      y: start.y + (end.y - start.y) * t,
-    };
-    for (let offset = -maxOffset; offset <= maxOffset; offset += offsetStep) {
-      const candidate = clampToField(
-        { x: anchor.x + perp.x * offset, y: anchor.y + perp.y * offset },
-        fieldMin,
-        fieldMax,
-      );
-      const curve = [start, candidate, end];
-      if (!isPathClear(curve, obstacles, margin)) continue;
-      const len = sampledArcLength(curve);
-      if (!best || len < best.length) {
-        best = { cp: candidate, length: len };
-      }
-    }
+function sampleCurve(points: BasePoint[], count: number): BasePoint[] {
+  const out: BasePoint[] = new Array(count + 1);
+  for (let i = 0; i <= count; i++) {
+    out[i] = getCurvePoint(i / count, points);
   }
-  return best;
+  return out;
 }
 
-function searchTwoControlPoints(
-  start: BasePoint,
-  end: BasePoint,
-  obstacles: BasePoint[][],
-  margin: number,
-  fieldMin: number,
-  fieldMax: number,
-): { cps: BasePoint[]; length: number } | null {
-  const perp = perpendicularUnit(start, end);
-  const direct = distance(start, end);
-  const maxOffset = Math.max(40, direct);
-  const offsetStep = 8; // coarser — 2D search
-
-  const anchor1: BasePoint = {
-    x: start.x + (end.x - start.x) / 3,
-    y: start.y + (end.y - start.y) / 3,
-  };
-  const anchor2: BasePoint = {
-    x: start.x + (2 * (end.x - start.x)) / 3,
-    y: start.y + (2 * (end.y - start.y)) / 3,
-  };
-
-  let best: { cps: BasePoint[]; length: number } | null = null;
-
-  for (let o1 = -maxOffset; o1 <= maxOffset; o1 += offsetStep) {
-    const cp1 = clampToField(
-      { x: anchor1.x + perp.x * o1, y: anchor1.y + perp.y * o1 },
-      fieldMin,
-      fieldMax,
-    );
-    for (let o2 = -maxOffset; o2 <= maxOffset; o2 += offsetStep) {
-      const cp2 = clampToField(
-        { x: anchor2.x + perp.x * o2, y: anchor2.y + perp.y * o2 },
-        fieldMin,
-        fieldMax,
-      );
-      const curve = [start, cp1, cp2, end];
-      if (!isPathClear(curve, obstacles, margin)) continue;
-      const len = sampledArcLength(curve);
-      if (!best || len < best.length) {
-        best = { cps: [cp1, cp2], length: len };
-      }
-    }
-  }
-  return best;
-}
-
-export function optimizePath(
-  start: BasePoint,
-  end: BasePoint,
-  shapes: Shape[],
-  options: OptimizerOptions,
-): OptimizerResult {
-  const obstacles = shapes.map((s) => s.vertices);
-  // Effective margin: half the robot's diagonal so any orientation of the
-  // body stays out of the obstacle, plus the user's safety buffer.
+function robotClearance(opts: OptimizerOptions): number {
+  // Half-diagonal of the robot footprint plus the user's safety buffer —
+  // a circle of this radius around the path centerline must stay clear.
   const halfDiagonal =
     Math.sqrt(
-      options.robotWidth * options.robotWidth +
-        options.robotHeight * options.robotHeight,
+      opts.robotWidth * opts.robotWidth +
+        opts.robotHeight * opts.robotHeight,
     ) / 2;
-  const margin = halfDiagonal + Math.max(0, options.safetyMargin || 0);
+  return halfDiagonal + Math.max(0, opts.safetyMargin || 0);
+}
 
-  const straight = [start, end];
-  if (isPathClear(straight, obstacles, margin)) {
-    return {
-      controlPoints: [],
-      pathLength: distance(start, end),
-      clear: true,
-    };
+/**
+ * Cost function. Lower is better. Hard violations (out of field, inside an
+ * obstacle) return very large numbers so the optimizer can never prefer them.
+ */
+function computeCost(
+  start: BasePoint,
+  end: BasePoint,
+  controlPoints: BasePoint[],
+  obstacles: BasePoint[][],
+  opts: OptimizerOptions,
+): number {
+  const all = [start, ...controlPoints, end];
+  const samples = sampleCurve(all, SAMPLE_COUNT);
+  const margin = robotClearance(opts);
+  const maxVel = Math.max(1, opts.maxVelocity);
+  // Allowed lateral acceleration. Pedro Pathing settings don't ship one
+  // directly, so we treat maxAcceleration as a proxy.
+  const maxLatAccel = Math.max(1, opts.maxAcceleration);
+
+  let outOfBoundsPenalty = 0;
+  let obstaclePenalty = 0;
+  let time = 0;
+  let length = 0;
+  let sharpTurnPenalty = 0;
+
+  // Field-bounds and obstacle checks happen per sample.
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i];
+    if (
+      s.x < opts.fieldMin ||
+      s.x > opts.fieldMax ||
+      s.y < opts.fieldMin ||
+      s.y > opts.fieldMax
+    ) {
+      const overflow =
+        Math.max(0, opts.fieldMin - s.x) +
+        Math.max(0, s.x - opts.fieldMax) +
+        Math.max(0, opts.fieldMin - s.y) +
+        Math.max(0, s.y - opts.fieldMax);
+      outOfBoundsPenalty += 1000 + overflow * 200;
+    }
+    for (const obs of obstacles) {
+      if (pointInPolygon([s.x, s.y], obs)) {
+        obstaclePenalty += 5000;
+      } else {
+        const d = minDistanceToPolygon([s.x, s.y], obs);
+        if (d < margin) {
+          // Quadratic ramp so the optimizer feels gradient near the boundary.
+          const overshoot = margin - d;
+          obstaclePenalty += overshoot * overshoot * 50 + 5;
+        }
+      }
+    }
   }
 
-  const single = searchSingleControlPoint(
-    start,
-    end,
-    obstacles,
-    margin,
-    options.fieldMin,
-    options.fieldMax,
-  );
-  if (single) {
-    return {
-      controlPoints: [single.cp],
-      pathLength: single.length,
-      clear: true,
-    };
-  }
+  // Time integral: speed at each segment is min(maxVel, sqrt(maxLatAccel/|k|)).
+  for (let i = 1; i < samples.length - 1; i++) {
+    const prev = samples[i - 1];
+    const cur = samples[i];
+    const next = samples[i + 1];
+    const vinX = cur.x - prev.x;
+    const vinY = cur.y - prev.y;
+    const voutX = next.x - cur.x;
+    const voutY = next.y - cur.y;
+    const segLen = Math.sqrt(vinX * vinX + vinY * vinY);
+    length += segLen;
+    if (segLen < 1e-4) continue;
 
-  const double = searchTwoControlPoints(
-    start,
-    end,
-    obstacles,
-    margin,
-    options.fieldMin,
-    options.fieldMax,
-  );
-  if (double) {
-    return {
-      controlPoints: double.cps,
-      pathLength: double.length,
-      clear: true,
-    };
-  }
+    const cross = vinX * voutY - vinY * voutX;
+    const dot = vinX * voutX + vinY * voutY;
+    const dTheta = Math.atan2(cross, dot); // signed turn angle (radians)
+    const kappa = Math.abs(dTheta) / Math.max(segLen, 1e-4);
 
-  // Nothing clear — return straight line and let the caller surface the
-  // failure. Better than silently inventing a bad path.
+    const speedFromCurve = kappa > 1e-4
+      ? Math.sqrt(maxLatAccel / kappa)
+      : maxVel;
+    const speed = Math.max(0.5, Math.min(maxVel, speedFromCurve));
+    time += segLen / speed;
+
+    // Anything turning more than 90° in a single sample step is almost
+    // certainly a control-point placement that makes the curve loop back
+    // on itself — push hard against it.
+    const absTheta = Math.abs(dTheta);
+    if (absTheta > Math.PI / 2) {
+      sharpTurnPenalty += (absTheta - Math.PI / 2) * 200;
+    }
+  }
+  // Close out the last segment so total length is accurate.
+  const tailSeg = distance(samples[samples.length - 2], samples[samples.length - 1]);
+  length += tailSeg;
+
+  // Length term is a tiebreaker so two equal-time options prefer the shorter.
+  return time + length * 0.01 + outOfBoundsPenalty + obstaclePenalty + sharpTurnPenalty;
+}
+
+function seedControlPoint(start: BasePoint, end: BasePoint): BasePoint {
   return {
-    controlPoints: [],
-    pathLength: distance(start, end),
-    clear: false,
+    x: (start.x + end.x) / 2,
+    y: (start.y + end.y) / 2,
+  };
+}
+
+/**
+ * Streaming optimizer. Yields the best-so-far control points after each
+ * iteration that improved on the previous best, so the caller can drive a
+ * live UI update.
+ */
+export async function* optimizePathLive(
+  start: BasePoint,
+  end: BasePoint,
+  initialControlPoints: BasePoint[],
+  shapes: Shape[],
+  opts: OptimizerOptions,
+  abortSignal?: AbortSignal,
+): AsyncGenerator<OptimizerProgress> {
+  const obstacles = shapes.map((s) => s.vertices);
+
+  // Auto-seed a single control point at the midpoint when the line has none.
+  let current: BasePoint[] =
+    initialControlPoints.length > 0
+      ? initialControlPoints.map((p) => clampToField(p, opts.fieldMin, opts.fieldMax))
+      : [seedControlPoint(start, end)];
+
+  let currentCost = computeCost(start, end, current, obstacles, opts);
+  yield { controlPoints: current, cost: currentCost, iteration: 0, done: false };
+
+  const baseDist = distance(start, end);
+  // Start with a search radius that scales with the segment length so short
+  // paths don't waste iterations exploring half the field.
+  let stepSize = Math.max(8, baseDist * 0.4);
+  const minStepSize = 0.05;
+  const cooling = 0.96;
+  const candidatesPerIteration = 10;
+  const maxIterations = 180;
+
+  for (let iter = 1; iter <= maxIterations; iter++) {
+    if (abortSignal?.aborted) break;
+
+    let bestCandidate: BasePoint[] | null = null;
+    let bestCost = currentCost;
+
+    for (let k = 0; k < candidatesPerIteration; k++) {
+      const candidate = current.map((cp) =>
+        clampToField(
+          {
+            x: cp.x + (Math.random() - 0.5) * 2 * stepSize,
+            y: cp.y + (Math.random() - 0.5) * 2 * stepSize,
+          },
+          opts.fieldMin,
+          opts.fieldMax,
+        ),
+      );
+      const cost = computeCost(start, end, candidate, obstacles, opts);
+      if (cost < bestCost) {
+        bestCost = cost;
+        bestCandidate = candidate;
+      }
+    }
+
+    if (bestCandidate) {
+      current = bestCandidate;
+      currentCost = bestCost;
+      yield { controlPoints: current, cost: currentCost, iteration: iter, done: false };
+    }
+
+    stepSize = Math.max(minStepSize, stepSize * cooling);
+
+    // Yield to the browser so the path repaints and clicks stay responsive.
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise<void>((resolve) => {
+      if (typeof requestAnimationFrame !== "undefined") {
+        requestAnimationFrame(() => resolve());
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
+  }
+
+  yield {
+    controlPoints: current,
+    cost: currentCost,
+    iteration: maxIterations,
+    done: true,
   };
 }
