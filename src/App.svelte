@@ -69,6 +69,7 @@
   import { onMount, tick } from "svelte";
   import { debounce } from "lodash";
   import { createHistory, type AppState } from "./utils/history";
+  import { optimizePath } from "./utils/pathOptimizer";
   // Browser-only build: file operations use the browser file store and
   // localStorage. Electron-specific APIs have been removed.
 
@@ -2656,7 +2657,7 @@
 
   async function optimizeLine(
     lineId: string,
-    targetControlPointIndex?: number,
+    _targetControlPointIndex?: number,
   ) {
     const lineIndex = lines.findIndex((l) => l.id === lineId);
     if (lineIndex === -1) {
@@ -2668,56 +2669,38 @@
     optimizingLineIds = { ...optimizingLineIds, [lineId]: true };
 
     try {
-      const payload = buildOptimizationPayload(lineIndex);
-      const result = await runOptimization(payload);
+      const line = lines[lineIndex];
+      const startPt =
+        lineIndex === 0 ? startPoint : lines[lineIndex - 1]?.endPoint;
+      if (!startPt) throw new Error("Missing start point for optimization.");
 
-      const optimizedWaypoints = Array.isArray(result?.optimized_waypoints)
-        ? result.optimized_waypoints
-        : Array.isArray(result)
-          ? result
-          : null;
+      const result = optimizePath(
+        { x: startPt.x, y: startPt.y },
+        { x: line.endPoint.x, y: line.endPoint.y },
+        shapes,
+        {
+          fieldMin: FIELD_MIN,
+          fieldMax: FIELD_MAX,
+          robotWidth: settings.rWidth,
+          robotHeight: settings.rHeight,
+          safetyMargin: settings.safetyMargin ?? 0,
+        },
+      );
 
-      if (!optimizedWaypoints || optimizedWaypoints.length < 2) {
-        throw new Error("Unexpected optimizer response format.");
+      if (!result.clear) {
+        alert(
+          "No collision-free path found between these points — start, end, or both may be too close to an obstacle. Leaving the path unchanged.",
+        );
+        return;
       }
-
-      const interior = optimizedWaypoints
-        .slice(1, optimizedWaypoints.length - 1)
-        .map((p: number[]) => ({ x: p[0], y: p[1] }));
 
       const newLines = [...lines];
-      const current = newLines[lineIndex];
-
-      if (typeof targetControlPointIndex === "number") {
-        // Only replace the targeted control point; keep others and endpoint untouched
-        const replacement =
-          interior[targetControlPointIndex] ?? interior[interior.length - 1];
-        if (replacement) {
-          const cps = [...current.controlPoints];
-          if (cps[targetControlPointIndex]) {
-            cps[targetControlPointIndex] = replacement;
-            newLines[lineIndex] = {
-              ...current,
-              controlPoints: cps,
-            };
-            lines = normalizeLines(newLines);
-            recordChange();
-          }
-        }
-      } else {
-        // Replace entire line (control points and endpoint)
-        newLines[lineIndex] = {
-          ...current,
-          endPoint: {
-            ...current.endPoint,
-            x: optimizedWaypoints[optimizedWaypoints.length - 1][0],
-            y: optimizedWaypoints[optimizedWaypoints.length - 1][1],
-          },
-          controlPoints: interior,
-        };
-        lines = normalizeLines(newLines);
-        recordChange();
-      }
+      newLines[lineIndex] = {
+        ...line,
+        controlPoints: result.controlPoints,
+      };
+      lines = normalizeLines(newLines);
+      recordChange();
     } catch (err) {
       console.error(err);
       alert((err as Error).message || "Optimization failed.");
