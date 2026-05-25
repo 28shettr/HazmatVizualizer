@@ -11,20 +11,15 @@
   >
     <script type="module" src="/src/main.ts"></script>
     <script>
+      // Proactively unregister any previously installed service worker and
+      // delete its caches so users aren't trapped on stale builds.
       if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("sw.js").then(
-          (registration) => {
-            console.log(
-              "Service worker registration successful:",
-              registration,
-            );
-          },
-          (error) => {
-            console.error(`Service worker registration failed: ${error}`);
-          },
-        );
-      } else {
-        console.error("Service workers are not supported.");
+        navigator.serviceWorker.getRegistrations().then((regs) => {
+          regs.forEach((reg) => reg.unregister());
+        });
+        if (window.caches) {
+          caches.keys().then((keys) => keys.forEach((k) => caches.delete(k)));
+        }
       }
     </script>
   </body>
