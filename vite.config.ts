@@ -15,5 +15,8 @@ export default defineConfig({
       },
     },
   },
-  base: "./",
+  // Set explicitly to the GitHub Pages subpath so absolute asset URLs resolve
+  // correctly when served at https://<user>.github.io/HazmatVizualizer/.
+  // Override at build time with `BASE_PATH=/ npm run build` for root-domain hosts.
+  base: process.env.BASE_PATH ?? "/HazmatVizualizer/",
 });

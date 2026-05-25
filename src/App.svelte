@@ -140,12 +140,13 @@
     return next;
   }
 
+  const ASSET_BASE = import.meta.env.BASE_URL;
   $: fieldMapSrc =
     settings.fieldMap === "custom"
-      ? settings.customFieldImage || "/fields/decode.webp"
+      ? settings.customFieldImage || `${ASSET_BASE}fields/decode.webp`
       : settings.fieldMap
-        ? `/fields/${settings.fieldMap}`
-        : "/fields/decode.webp";
+        ? `${ASSET_BASE}fields/${settings.fieldMap}`
+        : `${ASSET_BASE}fields/decode.webp`;
   let sequence: SequenceItem[] = lines.map((ln) => ({
     kind: "path",
     lineId: ln.id!,
@@ -1626,10 +1627,10 @@
         });
 
       const fieldImage = await loadImage(fieldMapSrc).catch(async () => {
-        return loadImage("/fields/decode.webp");
+        return loadImage(`${ASSET_BASE}fields/decode.webp`);
       });
-      const robotImage = await loadImage(settings.robotImage || "/robot.png").catch(async () => {
-        return loadImage("/robot.png");
+      const robotImage = await loadImage(settings.robotImage || `${ASSET_BASE}robot.png`).catch(async () => {
+        return loadImage(`${ASSET_BASE}robot.png`);
       });
 
       const drawRobot = (
@@ -3088,7 +3089,7 @@
         draggable="false"
         on:error={(e) => {
           console.error("Failed to load field map:", settings.fieldMap);
-          e.target.src = "/fields/decode.webp"; // Fallback
+          e.target.src = `${ASSET_BASE}fields/decode.webp`; // Fallback
         }}
         on:dragstart={(e) => e.preventDefault()}
         on:selectstart={(e) => e.preventDefault()}

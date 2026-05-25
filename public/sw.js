@@ -1,32 +1,36 @@
-const VERSION = "v2";
+const VERSION = "v3";
 const CACHE_NAME = `pedro-visualizer-${VERSION}`;
 
-const APP_STATIC_RESOURCES = [
-  "/",
-  "/favicon.ico",
-  "/fields/centerstage.webp",
-  "/fields/intothedeep.webp",
-  "/fields/decode.webp",
-  "/robot.png",
-  "/assets/index.js",
-  "/assets/index.css",
-  "/fonts/Poppins-Regular.ttf",
-  "/fonts/Poppins-SemiBold.ttf",
-  "/fonts/Poppins-Light.ttf",
-  "/fonts/Poppins-ExtraLight.ttf",
-];
+// Derive the deployment base path from the service worker's own URL so the
+// same file works whether the app is served from "/" or "/HazmatVizualizer/".
+const SCOPE = new URL("./", self.location).pathname;
 
-// On install, cache the static resources
+const APP_STATIC_RESOURCES = [
+  "",
+  "favicon.ico",
+  "fields/centerstage.webp",
+  "fields/intothedeep.webp",
+  "fields/decode.webp",
+  "robot.png",
+  "fonts/Poppins-Regular.ttf",
+  "fonts/Poppins-SemiBold.ttf",
+  "fonts/Poppins-Light.ttf",
+  "fonts/Poppins-ExtraLight.ttf",
+].map((path) => SCOPE + path);
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
-      cache.addAll(APP_STATIC_RESOURCES);
+      // Best-effort: don't let a single 404 abort the whole install.
+      await Promise.allSettled(
+        APP_STATIC_RESOURCES.map((url) => cache.add(url)),
+      );
+      self.skipWaiting();
     })(),
   );
 });
 
-// delete old caches on activate
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
@@ -44,34 +48,21 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// On fetch, intercept server requests
-// and respond with cached responses instead of going to network
 self.addEventListener("fetch", (event) => {
-  // As a single page app, direct app to always go to cached home page.
-  // if (event.request.mode === "navigate") {
-  //   event.respondWith(caches.match("/"));
-  //   return;
-  // }
-
-  // For all other requests, go to the cache first, and then the network.
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
       const cachedResponse = await cache.match(event.request.url);
       if (cachedResponse) {
-        // Return the cached response if it's available.
         return cachedResponse;
       }
-      // Try network if not in cache
       try {
         const networkResponse = await fetch(event.request);
-        // Cache successful responses for future use
         if (networkResponse.ok) {
           cache.put(event.request, networkResponse.clone());
         }
         return networkResponse;
       } catch (error) {
-        // If both cache and network fail, return a 404.
         return new Response(null, { status: 404 });
       }
     })(),

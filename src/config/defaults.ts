@@ -42,7 +42,8 @@ export const DEFAULT_SETTINGS: Settings = {
   maxAcceleration: 30,
   maxDeceleration: 30,
   fieldMap: "decode.webp",
-  robotImage: "/robot.png",
+  // Resolved at runtime against import.meta.env.BASE_URL by consumers.
+  robotImage: `${import.meta.env.BASE_URL}robot.png`,
   theme: "auto",
   showGhostPaths: false,
   showOnionLayers: false,
