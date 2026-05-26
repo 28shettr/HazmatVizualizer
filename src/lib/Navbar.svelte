@@ -28,6 +28,41 @@
 
   export let loadFile: (evt: any) => any;
 
+  // Strip near-white pixels from the hazmat JPG so the logo blends with the
+  // navbar background. Runs once on mount; falls back to the raw image if
+  // anything goes wrong.
+  const RAW_LOGO_SRC = `${import.meta.env.BASE_URL}hazmat.jpg`;
+  let logoSrc = RAW_LOGO_SRC;
+  onMount(() => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+          // Treat any pixel that's "basically white" as transparent. JPG
+          // compression noise means the edges aren't exactly 255,255,255.
+          if (data[i] > 235 && data[i + 1] > 235 && data[i + 2] > 235) {
+            data[i + 3] = 0;
+          }
+        }
+        ctx.putImageData(imageData, 0, 0);
+        logoSrc = canvas.toDataURL("image/png");
+      } catch {
+        // Same-origin so getImageData should always work, but keep the raw
+        // src visible if something does go sideways.
+      }
+    };
+    img.src = RAW_LOGO_SRC;
+  });
+
   export let startPoint: Point;
   export let lines: Line[];
   export let shapes: Shape[];
@@ -327,9 +362,9 @@
       </button>
 
       <img
-        src="{import.meta.env.BASE_URL}hazmat.jpg"
+        src={logoSrc}
         alt="Hazmat logo"
-        class="w-7 h-7 object-contain rounded-sm"
+        class="w-7 h-7 object-contain"
         draggable="false"
       />
       <span>Hazmat Pathing Visualizer</span>
