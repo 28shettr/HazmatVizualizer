@@ -169,10 +169,20 @@ function computeCost(
 }
 
 function seedControlPoint(start: BasePoint, end: BasePoint): BasePoint {
-  return {
-    x: (start.x + end.x) / 2,
-    y: (start.y + end.y) / 2,
-  };
+  // Bias the seed slightly off the start↔end line so the optimizer has a
+  // gradient to follow and the user sees the path settle into shape — even
+  // when the straight line ends up being the optimum, the visible pull-back
+  // confirms the optimizer is doing something.
+  const midX = (start.x + end.x) / 2;
+  const midY = (start.y + end.y) / 2;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.sqrt(dx * dx + dy * dy);
+  if (length < 1e-6) return { x: midX, y: midY };
+  const perpX = -dy / length;
+  const perpY = dx / length;
+  const offset = length * 0.2;
+  return { x: midX + perpX * offset, y: midY + perpY * offset };
 }
 
 /**
@@ -197,7 +207,6 @@ export async function* optimizePathLive(
       : [seedControlPoint(start, end)];
 
   let currentCost = computeCost(start, end, current, obstacles, opts);
-  console.log("[optimizer] seed", { current, currentCost });
   yield { controlPoints: current, cost: currentCost, iteration: 0, done: false };
 
   const baseDist = distance(start, end);

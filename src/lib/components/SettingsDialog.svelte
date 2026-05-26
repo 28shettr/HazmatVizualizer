@@ -111,7 +111,7 @@
           Settings
         </h2>
         <span class="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
-          Pedro Pathing Visualizer
+          Hazmat Pathing Visualizer
         </span>
         <button
           on:click={() => (isOpen = false)}

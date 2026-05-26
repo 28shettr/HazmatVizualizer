@@ -326,13 +326,19 @@
         </svg>
       </button>
 
-      <span>Pedro Pathing Visualizer</span>
+      <img
+        src="{import.meta.env.BASE_URL}hazmat.jpg"
+        alt="Hazmat logo"
+        class="w-7 h-7 object-contain rounded-sm"
+        draggable="false"
+      />
+      <span>Hazmat Pathing Visualizer</span>
       <!-- GitHub Repo Link (moved next to title) -->
       <a
         target="_blank"
         rel="noreferrer"
         title="GitHub Repo"
-        href="https://github.com/Pedro-Pathing/Visualizer"
+        href="https://github.com/28shettr/HazmatVizualizer"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"
